@@ -2,6 +2,7 @@
 #include <stdio.h>
 #include <cstdint>
 #include <string.h>
+#include <unistd.h>
 #include "../homerus.hpp"
 #include "adaptor.hpp"
 namespace folklore{ namespace homerus
@@ -110,6 +111,8 @@ namespace folklore{ namespace homerus
 		constexpr uint8_t verbose_level_silent=0;
 		constexpr uint8_t verbose_level_alert =1;
 		constexpr uint8_t verbose_level_normal=2;
+		constexpr uint8_t online =0x80;
+		constexpr uint8_t offline=0x00;
 		typedef bool *event_manager_type(void);
 		class annri;
 		struct energy    ;
@@ -208,6 +211,7 @@ namespace folklore{ namespace homerus
 			mutable bool         is_eval{false};
 			mutable bool     is_daq_eval{false};
 			mutable bool        is_start{false};
+			mutable bool       is_online{false};
 			inline void daq_header_eval(void)
 			{
 				memcpy(&daq_time,header+2,sizeof(daq_time));
@@ -272,8 +276,6 @@ namespace folklore{ namespace homerus
 				ttrf=((localbuf[rn-1]>>18)&0x1);
 				ev=localbuf[rn-1]&0x3fff;
 				return (double)ev;
-				//ev=localbuf[rn-1];
-				//return (double)ev;
 			}
 			inline double eval_t(void)
 			{
@@ -299,8 +301,31 @@ namespace folklore{ namespace homerus
 				if(dat_siz==0||is_eod)
 				{
 					auto ret=fread(header,sizeof(int),4,fp);
+					auto eoff=feof(fp);
+					if(eoff==0&&ret!=4) return false;
+					if(eoff!=0)
+					{
+						if(is_online)
+						{
+							for(;;)
+							{
+								sleep(1);
+								fflush(fp);
+								clearerr(fp);
+								ret=fread(header,sizeof(int),4,fp);
+								if(feof(fp)==0)
+								{
+									if(ret==4){ break;}
+									else      { return false; }
+								}
+							}
+						}
+						else
+						{
+							return false;
+						}
+					}
 					frs+=sizeof(int)*4;
-					if(ret==EOF||ret!=4) return false;
 					hflag=header[0]>>28;
 					ch  =  0;
 				}
@@ -321,15 +346,6 @@ namespace folklore{ namespace homerus
 						{
 							printf("readsize fail\n");
 							return false;
-						}
-						if(dat_siz>12311900)
-						{
-							printf("$$$ %d\n",dat_siz);
-							for(int i=0;i<6;++i)
-							printf("%x\n",localbuf[i]);
-							FILE* tmpf=fopen("out.bin","wb");
-							fwrite(localbuf,dat_siz,1,tmpf);
-							fclose(tmpf);
 						}
 						cnt = caen::block_header::counter(localbuf);
 						bt  = caen::block_header::timetag(localbuf);
@@ -360,7 +376,8 @@ namespace folklore{ namespace homerus
 						if(verbose_level>1)
 						{
 							char tbuf[512-4*sizeof(uint32_t)];
-							fread(tbuf,512-4*sizeof(uint32_t),1,fp);
+							auto ret2=fread(tbuf,512-4*sizeof(uint32_t),1,fp);
+							if(ret2!=1) return false;
 							frs+=512-4*sizeof(uint32_t);
 							printf("# ender info:\n");
 							size_t offset[3]={64,128,256};
@@ -375,8 +392,6 @@ namespace folklore{ namespace homerus
 						}
 					default:
 						is_eob=true;
-//						printf("hflag invalid\n");
-//						printf("0x%x rn=%d dat_siz=%d\n",hflag,rn,dat_siz);
 						return false;
 				}
 			}
@@ -415,7 +430,8 @@ namespace folklore{ namespace homerus
 			{
 				close();
 				fp=fopen(fnm,"rb");
-				verbose_level=mod;
+				verbose_level=mod&0xf;
+				is_online    =(mod&0x80)>0;
 				if(!fp) return false;
 				char tbuf[512];
 				if(fread(tbuf,512,1,fp)!=1) return false;
@@ -428,8 +444,8 @@ namespace folklore{ namespace homerus
 						printf("Are you sure to continue analyzing this file?\n");
 						printf("y/[n]");
 						char c('n');
-						scanf("%c",&c);
-						if(c=='y') return true;
+						auto ret=scanf("%c",&c);
+						if(c=='y' || ret==0) return true;
 					}
 					return false;
 				}
